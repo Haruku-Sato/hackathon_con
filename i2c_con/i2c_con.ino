@@ -15,7 +15,17 @@ bool isSystemPlaying = false;
 unsigned long playStartTime = 0;
 unsigned long nextBarTime = 0;   // ★次の小節送信時刻
 
-// チャタリング判定閾値[ms]（BPM対応表の最小値515msより小さく設定）
+// ヒステリシス（シュミットトリガ）閾値
+//   立ち上がり: TH_HIGH を超えたら「検知」
+//   立ち下がり: TH_LOW  を下回ったら「離脱」
+//   間に不感帯(TH_LOW〜TH_HIGH)を設け、閾値付近のばたつきによる多重検知を防ぐ。
+//   ※実測のベースライン(無通過時)とピーク(通過時)を見て要調整。
+//     TH_HIGH はピークの6〜7割、TH_LOW はベースラインのすぐ上に置き、
+//     両者の間（不感帯）をできるだけ広く取ること。
+const int TH_HIGH = 250;
+const int TH_LOW  = 100;
+
+// チャタリング判定閾値[ms]（ヒステリシス後の保険）
 const unsigned long CHATTER_THRESHOLD = 200;
 
 // t2 検出後の検知停止時間[ms]（この間は t1 を取り直さない）
@@ -25,10 +35,10 @@ unsigned long cooldownUntil = 0;
 // 荷重センサが反応した瞬間の時刻を返す（チャタリング処理は外で行う）
 unsigned long detectPress(int sensorPin) {
   int sensorState = analogRead(sensorPin);
-  if (sensorState > 150 && !isSensorPressed) {
+  if (!isSensorPressed && sensorState > TH_HIGH) {
     isSensorPressed = true;
     return millis();
-  } else if (sensorState <= 150 && isSensorPressed) {
+  } else if (isSensorPressed && sensorState < TH_LOW) {
     isSensorPressed = false;
   }
   return 0;
@@ -38,7 +48,7 @@ unsigned long measureTmeas(int sensorPin) {
   // クールダウン中は検知を停止（センサが離れた状態だけは追従しておく）
   if (millis() < cooldownUntil) {
     int s = analogRead(sensorPin);
-    if (s <= 150) isSensorPressed = false;
+    if (s < TH_LOW) isSensorPressed = false;
     return 0;
   }
 
