@@ -25,6 +25,19 @@ unsigned long nextBarTime = 0;   // ★次の小節送信時刻
 const int TH_HIGH = 250;
 const int TH_LOW  = 100;
 
+// ---- 簡易キャリブレーションモード ----
+//   true でアップロードすると検知処理の代わりに調整支援モードになる。
+//   A0生値をシリアルに流し（シリアルプロッタ用）、観測した最小/最大から
+//   推奨 TH_LOW / TH_HIGH を自動計算して定期表示する。
+//   使い方:
+//     1) true にしてアップロード
+//     2) 車がいない状態で数秒待つ（ベースライン計測）
+//     3) 低速・高速で何度か通過させる（ピーク計測）
+//     4) 表示された推奨値を上の TH_HIGH / TH_LOW に書き写す
+//     5) CALIBRATION を false に戻して本番アップロード
+//   シリアルモニタに 'r' を送ると観測値をリセットして測り直せる。
+const bool CALIBRATION = false;
+
 // チャタリング判定閾値[ms]（ヒステリシス後の保険）
 const unsigned long CHATTER_THRESHOLD = 200;
 
@@ -95,15 +108,66 @@ int lookupBPM(unsigned long Tmeas) {
   //return bpmTable[EDGE_COUNT];
 //}
 
+// ============================================================
+// 簡易キャリブレーション：生値を流しつつ推奨閾値を計算・表示
+// ============================================================
+void calibrationLoop(int sensorPin) {
+  static int gMin = 1023;   // 観測した最小値（≒ベースライン）
+  static int gMax = 0;      // 観測した最大値（≒ピーク）
+  static unsigned long lastSample = 0;
+  static unsigned long lastReport = 0;
+
+  // 'r' でリセット
+  if (Serial.available() && Serial.read() == 'r') {
+    gMin = 1023; gMax = 0;
+    Serial.println("# === reset: 観測値をクリアしました ===");
+  }
+
+  // 50Hzでサンプリング
+  if (millis() - lastSample >= 20) {
+    lastSample = millis();
+    int v = analogRead(sensorPin);
+    if (v < gMin) gMin = v;
+    if (v > gMax) gMax = v;
+    Serial.println(v);  // シリアルプロッタ用に生値を出力
+  }
+
+  // 2秒ごとに推奨閾値を表示
+  if (millis() - lastReport >= 2000) {
+    lastReport = millis();
+    int range = gMax - gMin;
+    if (range > 0) {
+      int thLow  = gMin + (int)(range * 0.2f);  // ベースライン直上
+      int thHigh = gMin + (int)(range * 0.6f);  // ピークの6割
+      Serial.print("# min="); Serial.print(gMin);
+      Serial.print(" max="); Serial.print(gMax);
+      Serial.print("  => 推奨 TH_LOW="); Serial.print(thLow);
+      Serial.print(" / TH_HIGH="); Serial.println(thHigh);
+    } else {
+      Serial.println("# 計測中... 車を通過させてください ('r'でリセット)");
+    }
+  }
+}
+
 void setup() {
   Serial.begin(9600);
   Wire.begin();
   pinMode(SENSOR_PIN, INPUT);
+  if (CALIBRATION) {
+    Serial.println("=== 簡易キャリブレーションモード ===");
+    Serial.println("無通過で数秒待ち→低速/高速で通過→表示された推奨値を採用。'r'でリセット");
+    return;
+  }
   Serial.println("=== 輪唱システム 指揮者(I2C・荷重センサ版)===");
   Serial.println("車両がセンサを通過するのを待機中...");
 }
 
 void loop() {
+  if (CALIBRATION) {
+    calibrationLoop(SENSOR_PIN);
+    return;
+  }
+
   // センサ計測は常時実行
   unsigned long tmeas = measureTmeas(SENSOR_PIN);
 
